@@ -97,11 +97,14 @@ internal Request ParseRequest(Arena* arena, String8 req)
 	Request result = {0};
 
 	String8List req_parts = Str8Split(arena, req, "\r\n\r\n");
-	Assert(req_parts.NodeCount == 2);
-
 	String8 header = req_parts.First->Str;
-	String8 body = req_parts.Last->Str;
-	result.Body = body;
+
+	u64 index = Str8Find(req, "\r\n\r\n");
+	if(index != req.Length)
+	{
+		String8 body = req_parts.Last->Str;
+		result.Body = body;		
+	}
 
 	String8List header_lines = Str8Split(arena, header, "\r\n");
 	String8List request_line = Str8Split(arena, header_lines.First->Str, " ");
