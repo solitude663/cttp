@@ -59,10 +59,15 @@ enum Http_Method
 
 enum Http_StatusCode
 {
-#define HttpAction(a, b) Http_ ## a = b,
+#define HttpAction(a, b) Http_##a = b,
 #include "HttpStatus.def"
 #undef HttpAction 
 };
+
+#define HttpAction(a, b) global char* Http_##a##Str = #a;
+#include "HttpStatus.def"
+#undef HttpAction
+
 
 // NOTE(afb) :: Doesn't work in C++ but works in C because C++ is a shit fucking
 // language. Tempting reason to use C.
@@ -71,6 +76,7 @@ enum Http_StatusCode
 // #include "HttpStatus.def"
 // #undef HttpAction
 // };
+
 
 struct Request
 {
@@ -90,8 +96,9 @@ struct Response
 	Http_Version Version;
 	Http_StatusCode Status;
 
-	String8* Keys;
-	String8* Values;
+#define DEFAULT_HEADER_CAP 32
+	String8 Keys[DEFAULT_HEADER_CAP];
+	String8 Values[DEFAULT_HEADER_CAP];
 	u32 HeaderCount;
 
 	String8 Body;
@@ -109,7 +116,7 @@ struct Route
 
 struct Router
 {
-#define DEFAULT_ROUTE_CAP 1024
+#define DEFAULT_ROUTE_CAP 128
 	Route Routes[DEFAULT_ROUTE_CAP];
 	u64 RouteCount;
 };
@@ -167,12 +174,11 @@ internal Request ParseRequest(Arena* arena, String8 req)
 	String8Node* node = header_lines.First->Next;
 	for(u32 idx = 0; idx < header_line_count; idx++)
 	{		
-		// TODO(afb) :: Hacky. Find a fix
-		String8List line = Str8Split(arena, node->Str, ": "); 
-		Assert(line.NodeCount == 2);
+		u64 pos = Str8Find(node->Str, ":");
+		Assert(pos != node->Str.Length);
 		
-		String8 key = line.First->Str;
-		String8 value = Trim8Space(line.Last->Str);
+		String8 key = Trim8Space(Prefix8(node->Str, pos));
+		String8 value = Trim8Space(Substr8(node->Str, pos+1, node->Str.Length - pos));
 
 		keys[idx] = key;
 		values[idx] = value;
@@ -183,6 +189,46 @@ internal Request ParseRequest(Arena* arena, String8 req)
 	result.Values = values;
 	result.HeaderCount = header_line_count;
 
+	return result;
+}
+
+internal String8 GetHttpVersionString(Arena* arena, Http_Version version)
+{
+	if(version == Http_1_0) return Str8Copy(arena, "HTTP/1.0");
+	if(version == Http_1_1) return Str8Copy(arena, "HTTP/1.1");
+
+	Assert(0);
+	return EmptyString;
+}
+
+internal String8 BuildResponse(Arena* arena, Response* res)
+{
+	String8 result = EmptyString;
+	
+	String8List sb = {0};
+
+	// Status line
+	{
+		String8List status_builder = {0};		
+		Str8ListPush(arena, &status_builder, GetHttpVersionString(arena, res->Version));
+		Str8ListPushF(arena, &status_builder, "%d Temp Reason", (i64)res->Status);
+		Str8ListPush(arena, &sb, Str8Join(arena, status_builder, " "));
+	}
+
+	for(u32 idx = 0; idx < res->HeaderCount; idx++)
+	{
+		Str8ListPushF(arena, &sb, "%S: %S", res->Keys[idx], res->Values);
+	}
+
+	Str8ListPushF(arena, &sb, "Content-Length: %d", res->Body.Length);
+	Str8ListPush(arena, &sb, "Connection: close");
+
+	String8 header = Str8Join(arena, sb, "\r\n");
+
+	String8List builder = {0};
+	Str8ListPush(arena, &builder, header);
+	Str8ListPush(arena, &builder, res->Body);
+	result = Str8Join(arena, builder, "\r\n\r\n");
 	return result;
 }
 
@@ -228,7 +274,7 @@ internal void HandleConnection(Arena* arena, Router* router, SOCKET client_sock)
 				break;
 			}
 
-			HandleFunc func = GetHandler(router, &req);
+			HandleFunc func = GetHandler(router, &req);			
 			if(!func)
 			{
 				String8 message =
@@ -240,9 +286,10 @@ internal void HandleConnection(Arena* arena, Router* router, SOCKET client_sock)
 				send(client_sock, (char*)message.Str, (i32)message.Length, 0);
 				break;
 			}
-
-			Response res = func(arena, &req);				
-			String8 response = {0};
+			
+			Response res = func(arena, &req);
+			res.Version = req.Version;
+			String8 response = BuildResponse(arena, &res);
 			
 			i32 bytes_sent = send(client_sock, (char*)response.Str,
 								  (i32)response.Length, 0);
@@ -278,13 +325,21 @@ internal void RegisterRoute(Router* router, Http_Method method,
 	router->Routes[router->RouteCount++] = route;
 }
 
+internal void AddHeader(Response* res, String8 key, String8 value)
+{
+	Assert(res->HeaderCount < (DEFAULT_HEADER_CAP - 1));
+	u32 idx = res->HeaderCount++;
+	res->Keys[idx] = key;
+	res->Values[idx] = value;
+}
+
 internal Response Temp(Arena* arena, Request* req)
 {
-	Response result = {0};
-
-	// printf("FOUND %.*s\n", Str8Print(req->URI));
-	UnusedVariable(arena);
 	UnusedVariable(req);
+	Response result = {0};
+	
+	result.Body = Str8Copy(arena, "Hola papi!!!!");
+	result.Status = Http_StatusOK;
 	
 	return result;
 }
